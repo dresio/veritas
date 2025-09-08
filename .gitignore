@@ -1,0 +1,4 @@
+.venv
+wandb
+src/__pycache__/
+checkpoints/
