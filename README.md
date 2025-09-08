@@ -45,7 +45,12 @@ While this shows some improvement with increased steps, the model still has a hi
 
 ### `train_v2.py`
 
-The next approach for training is utilizing a modified Curriculum learning approach. I believe this will help the model learn more effectively as it will be able to learn each point before moving onto the next. The goal is to train it on a specific buffer of points, that starts at size 1, and increments once the model can reach a certain performance threshold on the current buffer. The first run was allowed to save off the model every time it completed 10,000 steps, but this was later changed to only save when the buffer size was increased.  This led to a model that sovled 9 seprate points in less than 400k steps, but couldn't solve 10 in over 4M steps. The results are as follows:
+The next approach for training is utilizing a modified Curriculum learning approach. I believe this will help the model learn more effectively as it will be able to learn each point before moving onto the next. The goal is to train it on a specific buffer of points, that starts at size 1, and increments once the model can reach a certain performance threshold on the current buffer. The first run was allowed to save off the model every time it completed 10,000 steps, but this was later changed to only save when the buffer size was increased.  This led to a model that sovled 9 seprate points in less than 400k steps, but couldn't solve 10 in over 4M steps. The second and third run do not make it to 10 values in the buffer, but have some crazy diverging occuring with the loss function going all the way past 10,000 in some cases. The results are as follows:
+
 Steps | Total Buffer Size | Mean Error (m) | Standard Deviation (m)
 ----------- | ----------------- | ------------------ | ------------------
 4,000,000 | 10 | 0.5113 | 0.2859
+1,000,000 | 8 | 0.4689 | 0.2910
+300,000 | 7 | 0.4971 | 0.2086
+
+With the base curriculum learning approach, the model is able to get to a lower mean error, however suffered from a high standard deviation in most cases. The loss diverging instead of converging is a concern, but this method has brought more unknowns then answers for the next step. 
