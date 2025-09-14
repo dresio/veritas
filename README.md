@@ -31,7 +31,7 @@ The default solver for genesis is being utilized. It obtains roughly a mean erro
 
 ## Approach and Results
 
-### `train_v1.py`
+### Training attempt 1
 
 First training method used was simply getting the model's joint angles, and would sample a random point from a gaussian distribution using the model's joint output as the mean. It would then propagate the loss through the network based on the reward function to improve the model. The results are as follows:
 
@@ -43,7 +43,7 @@ Steps | Mean Error (m) | Standard Deviation (m)
 
 While this shows some improvement with increased steps, the model still has a high error rate and a quite shallow learning curve for the number of training steps. I am only testing with my physical hardware at home, so focusing on optimizing the training loop should be the next step.
 
-### `train_v2.py`
+### Training attempt 2
 
 The next approach for training is utilizing a modified Curriculum learning approach. I believe this will help the model learn more effectively as it will be able to learn each point before moving onto the next. The goal is to train it on a specific buffer of points, that starts at size 1, and increments once the model can reach a certain performance threshold on the current buffer. The first run was allowed to save off the model every time it completed 10,000 steps, but this was later changed to only save when the buffer size was increased.  This led to a model that sovled 9 seprate points in less than 400k steps, but couldn't solve 10 in over 4M steps. The second and third run do not make it to 10 values in the buffer, but have some crazy diverging occuring with the loss function going all the way past 10,000 in some cases. The results are as follows:
 
@@ -54,3 +54,7 @@ Steps | Total Buffer Size | Mean Error (m) | Standard Deviation (m)
 300,000 | 7 | 0.4971 | 0.2086
 
 With the base curriculum learning approach, the model is able to get to a lower mean error, however suffered from a high standard deviation in most cases. The loss diverging instead of converging is a concern, but this method has brought more unknowns then answers for the next step. 
+
+### Training attempt 3
+
+This appoach is very similar to v2, but with a more gradual approach to the curriculum learning. Instead of sampling a random point anywhere, it samples a point a random disatnce away from the previous target point within a small threshold. This is to help the model learn with less extreme joint movements until it can sample more points. The second thing that is added is an increasing in the reward threshold as the buffer size increases. This is to help the model progress through the curriculum and learn a more generalized solution. Lastly logging for the list of active points in the buffer is added to help with post processing and analysis, along with a new onion like plot aiming to find convergence zones where the model has been specifically trained on. Training is still ongoing.
