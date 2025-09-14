@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 from ik_model import IKNet
-from utils import sample_point
+from utils import sample_point, IKWorkspace
 
 import genesis as gs
 
@@ -21,7 +21,7 @@ def get_end_effector_error(qpos, panda, end_effector, target_pos):
     error = np.linalg.norm(ee_pos - target_np)
     return error
 
-def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100):
+def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
     # Init Genesis
     gs.init(backend=gs.gpu)
 
@@ -48,21 +48,16 @@ def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100
     model_errors, model_times = [], []
     ik_errors, ik_times = [], []
 
-    # Sampling params
-    inner_radius = 0.14
-    outer_radius = 0.7
-    sphere_pos = (0, 0, 0.33)
-    cylinder_pos = (0, 0, 0.35)
-    cylinder_height = 0.7
-
+    # Generate workspace
+    workspace = IKWorkspace()
+    workspace.sphere_center = np.array([0.0, 0.0, 0.33])
+    workspace.sphere_radius = 0.7
+    workspace.cylinder_center = np.array([0.0, 0.0, 0.35])
+    workspace.cylinder_radius = 0.14
+    workspace.cylinder_height = 0.7 
+    
     for i in range(trials):
-        target_pos = sample_point(
-            sphere_radius=outer_radius,
-            sphere_center=sphere_pos,
-            cylinder_radius=inner_radius,
-            cylinder_height=cylinder_height,
-            cylinder_center=cylinder_pos,
-        )
+        target_pos = sample_point(workspace)
         target_pos = torch.tensor(target_pos, dtype=torch.float32)
 
         # Model testing

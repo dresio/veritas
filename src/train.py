@@ -131,6 +131,7 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
             })
 
     step = 0
+    cycle = 0
     while len(buffer) < max_buffer_size:
         for _ in range(len(buffer)):
             target_pos = buffer[np.random.randint(0, len(buffer))]
@@ -146,23 +147,35 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
             optimizer.step()
 
             reward_window.append(reward)
+            
             wandb.log({
                 "step": step,
                 "reward": reward,
                 "buffer_size": len(buffer),
                 "loss": loss.item(),
-                "reward_threshold": compute_reward_threshold(len(buffer), max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=2.0),
+                "reward_threshold": compute_reward_threshold(len(buffer), max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=1.0),
             })
+            
+            step += 1
 
-        if step % 100 == 0:
-            print(f"[Step {step:04d}] Buffer: {len(buffer)} | Reward: {reward:.4f}")
-                            
-        step += 1
-
+            
         # Curriculum step
         avg_reward = np.mean(reward_window) if reward_window else -np.inf
         
-        if avg_reward > compute_reward_threshold(len(buffer), max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=2.0):
+        wandb.log({
+                "step": step,
+                "cycle": cycle,
+                "avg_reward": avg_reward,
+                "buffer_size": len(buffer),
+                "reward_threshold": compute_reward_threshold(len(buffer), max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=1.0),
+            })
+        
+
+        print(f"[Step {step:04d}] Buffer: {len(buffer)} | Reward: {avg_reward:.4f}")  
+        
+        cycle += 1
+        
+        if avg_reward > compute_reward_threshold(len(buffer), max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=1.0):
             add_point_to_buffer(workspace=workspace, buffer=buffer, step_size=sample_distance)
             save_model(model, save_path)
             save_buffer(buffer)
@@ -175,8 +188,6 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
                 )
             })
             
-        
-
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
     save_buffer(buffer)
@@ -190,4 +201,4 @@ def save_model(model, path):
     print(f"Model saved to: {path}")
 
 if __name__ == "__main__":
-    train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoints/ik_model.pt")
+    train_ik_net_curriculum(vis=False, max_buffer_size=3000, save_path="checkpoints/ik_model.pt")
