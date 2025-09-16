@@ -12,7 +12,7 @@ import pickle
 import math
 
 
-def get_reward(pred_qpos, target_pos, robot, end_effector, dofs_idx_local):
+def get_reward(pred_qpos, target_pos, robot, end_effector, dofs_idx_local, task_weight=1.0, joint_weight=0.1):
     # Get current pose
     robot.set_qpos(pred_qpos.detach().cpu().numpy())
     robot.scene.step()
@@ -27,16 +27,14 @@ def get_reward(pred_qpos, target_pos, robot, end_effector, dofs_idx_local):
 
     # Joint angle error
     joint_error = pred_qpos - torch.tensor(ik_qpos, device=pred_qpos.device)
-    reward = -torch.norm(joint_error)
 
     # End effector distance error bonus
-    ee_error = target_pos - ee_pos
-    task_space_bonus = -torch.norm(torch.tensor(ee_error))
+    ee_error = torch.tensor(target_pos - ee_pos)
 
     # Weighted combination 
-    total_reward = reward + 0.1 * task_space_bonus
+    reward = -task_weight * torch.norm(ee_error) - joint_weight * torch.norm(joint_error)
 
-    return total_reward.item()
+    return reward.item()
 
 def save_buffer(buffer, path="checkpoints/buffer.pkl"):
     with open(path, 'wb') as f:
@@ -70,7 +68,8 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
     wandb.init(project="veritas_v3", config={
         "lr": 1e-3,
         "action_std": 0.05,
-        "initial_buffer_size": 1,
+        "initial_buffer_size": 50,
+        "avg_reward_complete": 0.1,
     })
 
     # Initialize Genesis
@@ -121,7 +120,10 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
     # Curriculum Buffer
     buffer = add_point_to_buffer(workspace=workspace)
     
-    reward_window = deque(maxlen=20)
+    for _ in range(wandb.config.initial_buffer_size - 1):
+        buffer = add_point_to_buffer(workspace=workspace, buffer=buffer, step_size=sample_distance)
+
+    reward_window = deque()
     
     wandb.log({
                 "buffer_targets": wandb.Table(
@@ -162,6 +164,9 @@ def train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoi
         # Curriculum step
         avg_reward = np.mean(reward_window) if reward_window else -np.inf
         
+        reward_window.clear()
+
+        
         wandb.log({
                 "step": step,
                 "cycle": cycle,
@@ -201,4 +206,4 @@ def save_model(model, path):
     print(f"Model saved to: {path}")
 
 if __name__ == "__main__":
-    train_ik_net_curriculum(vis=False, max_buffer_size=3000, save_path="checkpoints/ik_model.pt")
+    train_ik_net_curriculum(vis=False, max_buffer_size=1000, save_path="checkpoints/ik_model.pt")
