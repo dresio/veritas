@@ -2,3 +2,4 @@
 wandb
 src/__pycache__/
 checkpoints/
+output_plots/

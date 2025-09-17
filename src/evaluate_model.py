@@ -3,9 +3,12 @@ import time
 import numpy as np
 
 from ik_model import IKNet
-from utils import sample_point
+from utils import sample_point, IKWorkspace
 
 import genesis as gs
+
+from tqdm import tqdm
+
 
 
 def get_end_effector_error(qpos, panda, end_effector, target_pos):
@@ -21,9 +24,9 @@ def get_end_effector_error(qpos, panda, end_effector, target_pos):
     error = np.linalg.norm(ee_pos - target_np)
     return error
 
-def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100):
+def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
     # Init Genesis
-    gs.init(backend=gs.gpu)
+    gs.init(backend=gs.gpu, logging_level='warning',)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=0.01),
@@ -48,21 +51,16 @@ def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100
     model_errors, model_times = [], []
     ik_errors, ik_times = [], []
 
-    # Sampling params
-    inner_radius = 0.14
-    outer_radius = 0.7
-    sphere_pos = (0, 0, 0.33)
-    cylinder_pos = (0, 0, 0.35)
-    cylinder_height = 0.7
-
-    for i in range(trials):
-        target_pos = sample_point(
-            sphere_radius=outer_radius,
-            sphere_center=sphere_pos,
-            cylinder_radius=inner_radius,
-            cylinder_height=cylinder_height,
-            cylinder_center=cylinder_pos,
-        )
+    # Generate workspace
+    workspace = IKWorkspace()
+    workspace.sphere_center = np.array([0.0, 0.0, 0.33])
+    workspace.sphere_radius = 0.7
+    workspace.cylinder_center = np.array([0.0, 0.0, 0.35])
+    workspace.cylinder_radius = 0.14
+    workspace.cylinder_height = 0.7 
+    
+    for i in tqdm(range(trials)):
+        target_pos = sample_point(workspace)
         target_pos = torch.tensor(target_pos, dtype=torch.float32)
 
         # Model testing
@@ -92,7 +90,7 @@ def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100
         ik_errors.append(ik_error)
         ik_times.append(ik_time)
 
-        print(f"[{i+1:03d}/{trials}] Model Err: {model_error:.4f}, IK Err: {ik_error:.4f}")
+        # print(f"[{i+1:03d}/{trials}] Model Err: {model_error:.4f}, IK Err: {ik_error:.4f}")
 
     # Report results
     print("\n===== Evaluation Results =====")
@@ -107,4 +105,4 @@ def test_model_vs_ik(model_path="checkpoints/ik_model_rl_v2_1000.pt", trials=100
     print(f"  Std Dev Err : {np.std(ik_errors):.4f}")
 
 if __name__ == "__main__":
-    test_model_vs_ik(trials=100)
+    test_model_vs_ik(trials=5000)
