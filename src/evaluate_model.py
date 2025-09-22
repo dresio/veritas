@@ -9,8 +9,6 @@ import genesis as gs
 
 from tqdm import tqdm
 
-
-
 def get_end_effector_error(qpos, panda, end_effector, target_pos):
     panda.set_qpos(qpos)
     panda.scene.step()

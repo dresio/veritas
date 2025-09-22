@@ -1,6 +1,9 @@
 import numpy as np
 import torch
 from dataclasses import dataclass, field
+from typing import Union
+from tqdm import tqdm
+from scipy.spatial import KDTree
 
 @dataclass
 class IKWorkspace:
@@ -10,8 +13,7 @@ class IKWorkspace:
     cylinder_radius: float = 0.1
     cylinder_height: float = 1.0
     cylinder_center: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.5]))
-
-
+    
 def sample_point(workspace: IKWorkspace):
     """
     Samples a point inside of a sphere with a cylindrical keep-out zone in the center. Currently uses Rejection Sampling which is inefficient but simple.
@@ -26,17 +28,6 @@ def sample_point(workspace: IKWorkspace):
     while check_in_cylinder(workspace, point):
         point = sample_sphere(workspace)
     return point
-
-def sample_tensor(workspace: IKWorkspace):
-    """
-
-    Args:
-        workspace (IKWorkspace, optional): _description_. IK Workspace paramters.
-
-    Returns:
-        torch.tensor: _description_
-    """
-    return torch.tensor(sample_point(workspace), dtype=torch.float32)
 
 def check_sample_valid(workspace: IKWorkspace, point=np.array([0.0,0.0,0.0])) -> bool:
     """
@@ -104,74 +95,58 @@ def check_in_cylinder(workspace: IKWorkspace, point = np.array([0.0, 0.0, 0.0]))
 
     return True
 
-def compute_fk_loss(pred_qpos, target_pos, robot, end_effector, dofs_idx_local):
-    """Set qpos, step sim, and compute EE error."""
-    robot.set_qpos(pred_qpos.detach().cpu().numpy())
-    robot.scene.step()
+def generate_buffer(workspace: IKWorkspace, step_size: float = 0.5, num_candidates: int = 20, buffer_size: int = 1000, device: Union[str, torch.device] = "cpu") -> torch.Tensor:
+    """
+    Generate a curriculum buffer of points within the workspace using cost-based sampling. Now uses KDTree for efficient neighbor searches to prevent unbounded processing time.
 
-    ee_pos = robot.get_link(end_effector.name).get_pos()
-    ee_error = torch.norm(torch.tensor(ee_pos, dtype=torch.float32) - target_pos)
+    Args:
+        workspace (IKWorkspace): Workspace specification.
+        step_size (float): Distance to perturb points.
+        num_candidates (int): Number of candidates to sample around previous point (more candidates mean more accurate density sampling).
+        buffer_size (int): Number of target points to include in buffer.
+        device (str or torch.device): Device to place final buffer on.
 
-    # Soft penalty: allow some tolerance
-    if ee_error < 0.1:
-        return ee_error
-    else:
-        return 0.1 + 0.01 * (ee_error - 0.1)
+    Returns:
+        torch.Tensor: Buffer of shape [buffer_size, 3] on the specified device.
+    """
+    
+    buffer = []
+    new_target = sample_point(workspace)
+    buffer.append(torch.tensor(new_target, dtype=torch.float32))
 
-def compute_sampling_cost(candidate: torch.Tensor, buffer, workspace: IKWorkspace, min_dist=0.01):
-    # Convert candidate to numpy
-    candidate_np = candidate.numpy()
-
-    cost = 0.0
-
-    # Repulsion from previous points
-    for point in buffer:
-        dist = torch.norm(candidate - point.cpu())
-        cost += torch.exp(-dist / min_dist)  # Exponential repulsion
-
-    # Penalty for being outside spherical workspace
-    sphere_dist = np.linalg.norm(candidate_np - workspace.sphere_center)
-    if sphere_dist > workspace.sphere_radius:
-        cost += 1e6  # Huge penalty
-
-    # Penalty for being *inside* cylindrical keep-out zone
-    xy_offset = candidate_np[:2] - workspace.cylinder_center[:2]
-    radial_dist = np.linalg.norm(xy_offset)
-    z = candidate_np[2]
-    z_low = workspace.cylinder_center[2] - workspace.cylinder_height / 2
-    z_high = workspace.cylinder_center[2] + workspace.cylinder_height / 2
-
-    if radial_dist < workspace.cylinder_radius and z_low <= z <= z_high:
-        cost += 1e6  # Also heavy penalty
-
-    return cost
-
-def add_point_to_buffer(workspace: IKWorkspace, buffer=None, step_size=0.5, num_candidates=20):
-    if buffer is None:
-        # First target - sample freely
-        buffer = []
-        new_target = sample_point(workspace)
-    else:
+        
+    for _ in tqdm(range(buffer_size - 1), desc="Generating curriculum buffer"):
         prev_target = buffer[-1].cpu()
         candidates = []
-        costs = []
+        candidate_costs = []
         
+        # Build KDTree from the current buffer
+        buffer_array = torch.stack(buffer).cpu().numpy()
+        kdtree = KDTree(buffer_array)
+
         for _ in range(num_candidates):
-            # Sample a nearby point
-            perturbation = (torch.randn(3) * step_size).cpu()
+            perturbation = torch.randn(3, device=prev_target.device) * step_size
             candidate = prev_target + perturbation
 
             if check_sample_valid(workspace, candidate.numpy()):
-                cost = compute_sampling_cost(candidate, buffer, workspace)
+                # Use KDTree to get distance to k nearest neighbors
+                k = min(5, len(buffer))  # Avoid requesting more neighbors than exist
+                dists, _ = kdtree.query(candidate.numpy(), k=k)
+                dists = np.atleast_1d(dists)
+
+                cost = dists.mean() 
+
                 candidates.append(candidate)
-                costs.append(cost)
+                candidate_costs.append(cost)
 
         if candidates:
-            best_idx = torch.argmin(torch.tensor(costs))
+            # Select candidate with lowest cost
+            best_idx = torch.argmin(torch.tensor(candidate_costs))
             new_target = candidates[best_idx]
         else:
-            # Fallback: sample a random valid point
-            new_target = sample_point(workspace)
+            # Fallback to a random sample if all candidates given did not pass check_sample_valid
+            new_target = torch.tensor(sample_point(workspace), dtype=torch.float32)
 
-    buffer.append(torch.tensor(new_target, dtype=torch.float32))
-    return buffer
+        buffer.append(torch.tensor(new_target, dtype=torch.float32, device=device))
+
+    return torch.stack(buffer).to(device)

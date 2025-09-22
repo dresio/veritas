@@ -19,7 +19,9 @@ Also utilizing WandB for experiment tracking. It does require an account but it 
 
 ## Sampling
 
-Points for sampling are generated using the `sample_point` function in `utils.py`. This samples points within a spherical shell and outside a cylinder, maintaining a range inside of the physical reach of the robot arm. The range sampling is done to ensure the IK solver has an optimal solution for any point so the mean time calculation for the IK solver is not skewed by points that are out of reach where the solver has to iterate util it hits the max iteration limit.
+Points for sampling are generated using the `generate_buffer` function in `utils.py`. This samples points within a spherical shell and outside a cylinder, maintaining a range inside of the physical reach of the robot arm. The range sampling is done to ensure the IK solver has an optimal solution for any point so the mean time calculation for the IK solver is not skewed by points that are out of reach where the solver has to iterate util it hits the max iteration limit. This is also done exported as a static list of points in a tensor to ensure high speed with parallelization during training. If you are trying to reuse this sampling method and they are grouped too closely together, simply increase the step size until it is evenly distributed. Here is an example of the points sampled using the onion plot utility in `onion_plot.py`:
+
+![Example Sampled Points](docs/example_sampling.png)
 
 ## Reward Function
 
@@ -66,5 +68,4 @@ Steps | Total Buffer Size | Mean Error (m) | Standard Deviation (m)
 ![Cycle Vs Steps Plot](docs/cycle_vs_steps.png)
 
 ### Notes for next iteration
-- Curriculum learning had an apparent improvment learning at the start of the model training, but seemed hit a wall. Other methods such as batching should be explored.
-- Reward normilization should be explored to help with the diverging loss.
+First a pure buffer approach was attempted. While faster due to parallelizaiton, it was not learning as quickly as the curriculum approach did. This brings me to the current solution which is simply parallelizing the curriculum approach properly. This is done by allocating a buffer of points the same way the curriculum approach does, but all intensive proceses are done at the start. Then the parallization is done across the segment of the buffer that is currently applicable. This should help speed up the training time while still allowing the model to learn in a more gradual way. The speed up is massive, where it would take nearly a full day to start approching 1M steps, we are now hitting the equivalent of 1M steps (steps now represents the number of batched runs across the buffer, not individual runs) in around an hour.
