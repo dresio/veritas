@@ -22,13 +22,12 @@ def get_end_effector_error(qpos, panda, end_effector, target_pos):
     error = np.linalg.norm(ee_pos - target_np)
     return error
 
-def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
+def test_model_vs_ik(pre_trained_model_path="checkpoints/ik_model.pt", post_trained_model_path="checkpoints/ik_model_post.pt", trials=1000):
     # Init Genesis
     gs.init(backend=gs.gpu, logging_level='warning',)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=0.01),
-        show_viewer=False,
     )
 
     scene.add_entity(gs.morphs.Plane())
@@ -42,12 +41,17 @@ def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
     dofs_idx_local = [panda.get_joint(name).dofs_idx_local[0] for name in joints]
 
     # Load model
-    model = IKNet()
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    pre_trained_model = IKNet()
+    pre_trained_model.load_state_dict(torch.load(pre_trained_model_path))
+    pre_trained_model.eval()
+    
+    post_trained_model = IKNet()
+    post_trained_model.load_state_dict(torch.load(post_trained_model_path))
+    post_trained_model.eval()
 
     model_errors, model_times = [], []
     ik_errors, ik_times = [], []
+    model_errors_post = []
 
     # Generate workspace
     workspace = IKWorkspace()
@@ -64,14 +68,20 @@ def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
         # Model testing
         start = time.time()
         with torch.no_grad():
-            pred_qpos = model(target_pos)
-        model_time = time.time() - start
+            pred_qpos = pre_trained_model(target_pos)
+            pred_qpos_post = post_trained_model(target_pos)
+        model_time = (time.time() - start)/2  # Average time for two modelss
 
         model_error = get_end_effector_error(
             pred_qpos.detach().cpu().numpy(), panda, end_effector, target_pos
         )
+        
+        model_error_post = get_end_effector_error(
+            pred_qpos_post.detach().cpu().numpy(), panda, end_effector, target_pos
+        )
 
         model_errors.append(model_error)
+        model_errors_post.append(model_error_post)
         model_times.append(model_time)
 
         # IK testing
@@ -92,10 +102,15 @@ def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
 
     # Report results
     print("\n===== Evaluation Results =====")
-    print("MODEL")
+    print("MODEL PRE-TRAINED")
     print(f"  Mean Time   : {np.mean(model_times)*1e3:.2f} ms")
     print(f"  Mean Error  : {np.mean(model_errors):.4f}")
     print(f"  Std Dev Err : {np.std(model_errors):.4f}")
+    
+    print("\nMODEL POST-TRAINED")
+    print(f"  Mean Time   : {np.mean(model_times)*1e3:.2f} ms")
+    print(f"  Mean Error  : {np.mean(model_errors_post):.4f}")
+    print(f"  Std Dev Err : {np.std(model_errors_post):.4f}")
 
     print("\nGENESIS IK")
     print(f"  Mean Time   : {np.mean(ik_times)*1e3:.2f} ms")
@@ -103,4 +118,5 @@ def test_model_vs_ik(model_path="checkpoints/ik_model.pt", trials=100):
     print(f"  Std Dev Err : {np.std(ik_errors):.4f}")
 
 if __name__ == "__main__":
+    print("Pretrained Model vs Genesis IK")
     test_model_vs_ik(trials=5000)
