@@ -69,19 +69,14 @@ def test_model_vs_ik(pre_trained_model_path="checkpoints/ik_model.pt", post_trai
         start = time.time()
         with torch.no_grad():
             pred_qpos = pre_trained_model(target_pos)
-            pred_qpos_post = post_trained_model(target_pos)
-        model_time = (time.time() - start)/2  # Average time for two modelss
+        model_time = (time.time() - start) 
 
         model_error = get_end_effector_error(
             pred_qpos.detach().cpu().numpy(), panda, end_effector, target_pos
         )
         
-        model_error_post = get_end_effector_error(
-            pred_qpos_post.detach().cpu().numpy(), panda, end_effector, target_pos
-        )
 
         model_errors.append(model_error)
-        model_errors_post.append(model_error_post)
         model_times.append(model_time)
 
         # IK testing
@@ -106,11 +101,6 @@ def test_model_vs_ik(pre_trained_model_path="checkpoints/ik_model.pt", post_trai
     print(f"  Mean Time   : {np.mean(model_times)*1e3:.2f} ms")
     print(f"  Mean Error  : {np.mean(model_errors):.4f}")
     print(f"  Std Dev Err : {np.std(model_errors):.4f}")
-    
-    print("\nMODEL POST-TRAINED")
-    print(f"  Mean Time   : {np.mean(model_times)*1e3:.2f} ms")
-    print(f"  Mean Error  : {np.mean(model_errors_post):.4f}")
-    print(f"  Std Dev Err : {np.std(model_errors_post):.4f}")
 
     print("\nGENESIS IK")
     print(f"  Mean Time   : {np.mean(ik_times)*1e3:.2f} ms")

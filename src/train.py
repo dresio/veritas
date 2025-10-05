@@ -98,8 +98,7 @@ def compute_per_joint_std(qpos_mean: torch.Tensor,
     envs_idx = list(range(B))
 
     # Set robot to qpos_mean
-    robot.control_dofs_position(qpos_mean.to(gs.device), envs_idx=envs_idx)
-    robot.scene.step()
+    robot.set_dofs_position(qpos_mean.to(gs.device), envs_idx=envs_idx, zero_velocity=True)
 
     jacobians = compute_geometric_jacobian(
         robot=robot,
@@ -148,10 +147,7 @@ def get_reward_batch(pred_qpos: torch.Tensor,
     envs_idx = list(range(B))
     
     # Apply predicted joint positions across all envs
-    robot.control_dofs_position(pred_qpos.to(gs.device), envs_idx=envs_idx)
-
-    # Step all environments in parallel
-    robot.scene.step()
+    robot.set_dofs_position(pred_qpos.to(gs.device), envs_idx=envs_idx, zero_velocity=True)
 
     # Get current EE positions for each env
     ee_link = robot.get_link(end_effector.name)
@@ -210,7 +206,7 @@ def compute_reward_threshold(buffer_size=1, max_buffer_size=1000, base_thresh=0.
     """
     return -(base_thresh + ((math.log(buffer_size)/math.log(max_buffer_size))*(max_thresh-base_thresh)))
 
-def pre_train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_model_rl.pt"):
+def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_model_rl.pt"):
     wandb.init(project="veritas", config={
         "lr": 1e-3,
         "action_std": 0.1,
@@ -330,8 +326,8 @@ def pre_train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_
                 "train/reward_threshold": compute_reward_threshold(
                     curriculum_advance_value, 
                     max_buffer_size=max_buffer_size, 
-                    base_thresh=0.2, 
-                    max_thresh=0.4
+                    base_thresh=0.1, 
+                    max_thresh=0.25
                 ),
                 "train/step_time_sec": (time.time() - t0) / wandb.config.log_interval,
                 "train/ee_error_mean": ee_error.mean().item(),
@@ -355,9 +351,8 @@ def pre_train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_
         print(f"[Step {step:04d}] Buffer: {curriculum_advance_value} | Reward: {avg_reward:.4f}")  
         
         
-        if avg_reward > compute_reward_threshold(curriculum_advance_value, max_buffer_size=max_buffer_size, base_thresh=0.2, max_thresh=0.4):
+        if avg_reward > compute_reward_threshold(curriculum_advance_value, max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=0.25):
             save_model(model, save_path)
-            save_buffer(buffer)
             print(f"> Curriculum advanced. New buffer size: {curriculum_advance_value}")
             wandb.log({
                 "curriculum/advanced_step": step,
@@ -368,133 +363,9 @@ def pre_train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_
             
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
-    save_buffer(buffer)
     print(f"\nModel saved to: {save_path}")
     wandb.save(save_path)
     wandb.finish()
-
-def post_train_ik_net(buffer_size=1000, 
-                      save_path="checkpoints/ik_model_post.pt", 
-                      max_steps=10000):
-    """Training loop for post-training to squeeze out extra performance using a more robust optimization method (less exploration)
-
-    Args:
-        buffer_size (int, optional): _description_. Defaults to 1000.
-        save_path (str, optional): _description_. Defaults to "checkpoints/ik_model_post.pt".
-        max_steps (int, optional): _description_. Defaults to 10000.
-    """
-    wandb.init(project="veritas_posttrain", config={
-        "lr": 1e-4,
-        "action_std": 0.02,
-        "max_steps": max_steps,
-        "log_interval": 5,
-    })
-
-    # Initialize Genesis
-    gs.init(backend=gs.gpu, 
-            logging_level='warning', 
-            # performance_mode=True
-            )
-
-    scene = gs.Scene(
-        sim_options=gs.options.SimOptions(dt=0.01),
-        viewer_options=gs.options.ViewerOptions(
-            camera_pos=(0, -3.5, 2.5),
-            camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=40,
-            max_FPS=60,
-        ),
-    )
-
-    scene.add_entity(gs.morphs.Plane())
-    panda = scene.add_entity(
-        gs.morphs.URDF(file="urdf/panda_bullet/panda_nohand.urdf", fixed=True)
-    )
-
-    scene.build(n_envs=buffer_size, env_spacing=(1.0, 1.0))
-
-    end_effector = panda.get_link("link7")
-    joints = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
-    dofs_idx_local = [panda.get_joint(name).dofs_idx_local[0] for name in joints]
-
-    model = IKNet()
-    
-    # Optional: load pre-trained weights
-    pretrain_path = "checkpoints/ik_model.pt"
-    if os.path.exists(pretrain_path):
-        model.load_state_dict(torch.load(pretrain_path))
-        print(f"Loaded pretrained model from: {pretrain_path}")
-    
-    optimizer = Adam(model.parameters(), lr=wandb.config.lr)
-    action_std = wandb.config.action_std
-    dist_fn = torch.distributions.Normal
-
-    # Generate new workspace and buffer
-    workspace = IKWorkspace()
-    workspace.sphere_center = np.array([0.0, 0.0, 0.33])
-    workspace.sphere_radius = 0.7
-    workspace.cylinder_center = np.array([0.0, 0.0, 0.35])
-    workspace.cylinder_radius = 0.14
-    workspace.cylinder_height = 0.7 
-
-    buffer = generate_buffer(workspace, step_size=1, buffer_size=buffer_size, device="cuda")
-    save_buffer(buffer, path="checkpoints/buffer_post.pkl")
-
-    wandb.log({
-        "posttrain_buffer_targets": wandb.Table(
-            columns=["x", "y", "z"],
-            data=[item.tolist() for item in buffer]
-        )
-    })
-
-    best_reward = -float('inf')
-    step = 0
-
-    while step < wandb.config.max_steps:
-        target_pos = buffer  # All points
-        qpos_mean = model(target_pos)
-        action_std = 0.5  # Much lower noise
-        distribution = dist_fn(qpos_mean, action_std)
-        action = distribution.rsample()  # Reparameterized for smoother gradients
-
-        
-        # Model should no longer need angles to optimize
-        rewards, ee_error, joint_error = get_reward_batch(
-            action, 
-            target_pos, 
-            panda, 
-            end_effector, 
-            dofs_idx_local, 
-        )
-
-        avg_reward = rewards.mean().item()
-
-        log_probs = distribution.log_prob(action).sum(dim=1)
-        loss = -(log_probs * rewards).mean()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        step += 1
-
-        if step % wandb.config.log_interval == 0:
-            wandb.log({
-                "step": step,
-                "avg_reward": avg_reward,
-                "best_reward": best_reward,
-                "loss": loss.item()
-            })
-            print(f"[Step {step}] Avg Reward: {avg_reward:.4f} | Best: {best_reward:.4f}")
-
-        # Save if performance improved
-        if avg_reward > best_reward:
-            best_reward = avg_reward
-            save_model(model, save_path)
-            print(f"> New best model saved with avg_reward: {avg_reward:.4f}")
-            wandb.log({"best_model_saved_step": step, "avg_reward": avg_reward})
-
-    wandb.finish()
-    print(f"Finished post-training. Best reward: {best_reward:.4f}")
 
 def save_model(model, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -502,5 +373,4 @@ def save_model(model, path):
     print(f"Model saved to: {path}")
 
 if __name__ == "__main__":
-    pre_train_ik_net_curriculum(max_buffer_size=10000, save_path="checkpoints/ik_model.pt")
-    # post_train_ik_net(buffer_size=10000, save_path="checkpoints/ik_model_post.pt")
+    train_ik_net_curriculum(max_buffer_size=10000, save_path="checkpoints/ik_model.pt")
