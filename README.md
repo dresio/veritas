@@ -10,7 +10,7 @@ Also utilizing WandB for experiment tracking. It does require an account but it 
 
 ## Setup
 
-1. Clone the repository
+1. Clone the repository. Be sure to pull git lfs objects: `git lfs pull`
 
 2. Install Genesis and its dependencies. Ensure torch is installed properly. Refer to the [Genesis installation guide](https://github.com/Genesis-Embodied-AI/Genesis?tab=readme-ov-file#quick-installation)
 

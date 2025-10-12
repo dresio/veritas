@@ -56,6 +56,9 @@ def sample_point(workspace: IKWorkspace):
     """
     
     point = sample_sphere(workspace)
+    if(not workspace.has_cylinder):
+        return point
+    
     while check_in_cylinder(workspace, point):
         point = sample_sphere(workspace)
     return point
@@ -79,6 +82,9 @@ def check_sample_valid(workspace: IKWorkspace, point=np.array([0.0,0.0,0.0])) ->
     inside_sphere = sphere_dist <= workspace.sphere_radius
     
     # Check if point is inside the cylinder
+    if(not workspace.has_cylinder):
+        return inside_sphere  # No cylinder to check against
+    
     inside_cylinder = check_in_cylinder(
         workspace=workspace,
         point=point

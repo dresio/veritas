@@ -17,7 +17,7 @@ from typing import Tuple
 def calculate_base_std(ee_error, max_error = 1.0, min_error = 0.01)->float:
     
     max_std = 0.5
-    min_std = 0.05
+    min_std = 0.01
     
     if ee_error is None:
         return max_std
@@ -98,7 +98,7 @@ def compute_per_joint_std(qpos_mean: torch.Tensor,
     envs_idx = list(range(B))
 
     # Set robot to qpos_mean
-    robot.set_dofs_position(qpos_mean.to(gs.device), envs_idx=envs_idx, zero_velocity=True)
+    robot.set_dofs_position(qpos_mean.to(gs.device), envs_idx=envs_idx, dofs_idx_local=dofs_idx_local, zero_velocity=True)
 
     jacobians = compute_geometric_jacobian(
         robot=robot,
@@ -106,7 +106,7 @@ def compute_per_joint_std(qpos_mean: torch.Tensor,
         end_effector_link=end_effector_link,
         envs_idx=envs_idx
     )  # [B, 6, N_total]
-    jacobians = jacobians[:, :, dofs_idx_local]                 # [B, 6, N]
+    # jacobians = jacobians[:, :, dofs_idx_local]                 # [B, 6, N]
 
     # Compute joint sensitivity: L2 norm over spatial dimension (6D twist)
     joint_sensitivity = torch.norm(jacobians, dim=1)  # [B, N]
@@ -147,7 +147,7 @@ def get_reward_batch(pred_qpos: torch.Tensor,
     envs_idx = list(range(B))
     
     # Apply predicted joint positions across all envs
-    robot.set_dofs_position(pred_qpos.to(gs.device), envs_idx=envs_idx, zero_velocity=True)
+    robot.set_dofs_position(pred_qpos.to(gs.device), envs_idx=envs_idx, dofs_idx_local=dofs_idx_local, zero_velocity=True)
 
     # Get current EE positions for each env
     ee_link = robot.get_link(end_effector.name)
@@ -169,9 +169,10 @@ def get_reward_batch(pred_qpos: torch.Tensor,
         )
 
         ik_qpos = torch.tensor(ik_qpos, device=pred_qpos.device, dtype=pred_qpos.dtype)  # [B, 7]
+        ik_qpos_subset = ik_qpos[:, dofs_idx_local]  # [B, 3]  
     
         # Compute reward components
-        joint_error = torch.norm(pred_qpos - ik_qpos, dim=1)  # [B]
+        joint_error = torch.norm(pred_qpos - ik_qpos_subset, dim=1)  # [B]
 
     reward = -task_weight * ee_error - joint_weight * joint_error  # [B]
     
@@ -206,10 +207,9 @@ def compute_reward_threshold(buffer_size=1, max_buffer_size=1000, base_thresh=0.
     """
     return -(base_thresh + ((math.log(buffer_size)/math.log(max_buffer_size))*(max_thresh-base_thresh)))
 
-def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_model_rl.pt"):
+def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_model_rl.pt", workspace_path="ik_workspace.json"):
     wandb.init(project="veritas", config={
         "lr": 1e-3,
-        "action_std": 0.1,
         "initial_buffer_size": 50,
         "avg_reward_complete": 0.1,
         "log_interval": 5,
@@ -231,33 +231,35 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         ),
     )
 
-    scene.add_entity(gs.morphs.Plane())
-    panda = scene.add_entity(
-        gs.morphs.URDF(file="urdf/panda_bullet/panda_nohand.urdf", fixed=True)
-    )
-    target_marker = scene.add_entity(
-        gs.morphs.Mesh(file="meshes/axis.obj", scale=0.2),
-        surface=gs.surfaces.Default(color=(1, 0.5, 0.5, 1)),
+    links_to_keep = ["LF_FOOT"]
+    robot = scene.add_entity(
+        gs.morphs.URDF(
+            file="anymal_c/urdf/anymal_c.urdf",
+            fixed=True,
+            collision=False,
+            pos=(0, 0, 1),
+            links_to_keep=links_to_keep,
+        ),
     )
 
     scene.build(n_envs=max_buffer_size, env_spacing=(1.0, 1.0))
 
-    end_effector = panda.get_link("link7")
-    joints = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
-    dofs_idx_local = [panda.get_joint(name).dofs_idx_local[0] for name in joints]
+    joints_name = ("LF_HAA", "LF_HFE", "LF_KFE")
+    dofs_idx_local = [robot.get_joint(name).dofs_idx_local[0] for name in joints_name]
+    print(f"Controlling joints: {joints_name} at DOF indices {dofs_idx_local}, total idx length: {len(dofs_idx_local)}")
+    end_effector = robot.get_link("LF_FOOT")
 
-    model = IKNet()
+    model = IKNet(output_dim=len(dofs_idx_local))
     optimizer = Adam(model.parameters(), lr=wandb.config.lr)
-    action_std = wandb.config.action_std
     dist_fn = torch.distributions.Normal
 
     # Generate workspace
-    workspace = IKWorkspace()
-    workspace.sphere_center = np.array([0.0, 0.0, 0.33])
-    workspace.sphere_radius = 0.7
-    workspace.cylinder_center = np.array([0.0, 0.0, 0.35])
-    workspace.cylinder_radius = 0.14
-    workspace.cylinder_height = 0.7 
+    workspace = None
+    try:
+        workspace = IKWorkspace.load_from_file(workspace_path)
+        print(f"Loaded workspace from {workspace_path}")
+    except Exception as e:
+        print(f"Failed to load workspace from {workspace_path}, using default. Error: {e}")
     
     # Generate buffer for entire run
     buffer = generate_buffer(workspace, step_size=1, buffer_size=max_buffer_size, device="cuda")
@@ -288,7 +290,7 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         
         per_joint_std = compute_per_joint_std(
             qpos_mean, 
-            robot=panda, 
+            robot=robot, 
             dofs_idx_local=dofs_idx_local,
             end_effector_link=end_effector,
             base_std=action_std,
@@ -298,7 +300,7 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         joint_std_per_joint = per_joint_std.mean(dim=0).tolist()  # [B]
         distribution = dist_fn(qpos_mean, per_joint_std)
         action = distribution.sample()
-        rewards, ee_error, joint_error = get_reward_batch(action, target_pos, panda, end_effector, dofs_idx_local, use_angles=True, joint_weight=0.3)
+        rewards, ee_error, joint_error = get_reward_batch(action, target_pos, robot, end_effector, dofs_idx_local, use_angles=True, joint_weight=0.3)
         avg_reward = rewards.mean().item()
         
         log_probs = distribution.log_prob(action).sum(dim=1)  # [B]
@@ -311,7 +313,7 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         optimizer.step()
         
         step += 1
-        last_reward = avg_reward
+        # last_reward = avg_reward
         
         if step % wandb.config.log_interval == 0:
             wandb.log({
@@ -326,8 +328,8 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
                 "train/reward_threshold": compute_reward_threshold(
                     curriculum_advance_value, 
                     max_buffer_size=max_buffer_size, 
-                    base_thresh=0.1, 
-                    max_thresh=0.25
+                    base_thresh=0.05, 
+                    max_thresh=0.1
                 ),
                 "train/step_time_sec": (time.time() - t0) / wandb.config.log_interval,
                 "train/ee_error_mean": ee_error.mean().item(),
@@ -335,10 +337,6 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
                 "train/action_std_joint_0": joint_std_per_joint[0],
                 "train/action_std_joint_1": joint_std_per_joint[1],
                 "train/action_std_joint_2": joint_std_per_joint[2],
-                "train/action_std_joint_3": joint_std_per_joint[3],
-                "train/action_std_joint_4": joint_std_per_joint[4],
-                "train/action_std_joint_5": joint_std_per_joint[5],
-                "train/action_std_joint_6": joint_std_per_joint[6],
             })
             t0 = time.time()
             
@@ -351,7 +349,7 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         print(f"[Step {step:04d}] Buffer: {curriculum_advance_value} | Reward: {avg_reward:.4f}")  
         
         
-        if avg_reward > compute_reward_threshold(curriculum_advance_value, max_buffer_size=max_buffer_size, base_thresh=0.1, max_thresh=0.25):
+        if avg_reward > compute_reward_threshold(curriculum_advance_value, max_buffer_size=max_buffer_size, base_thresh=0.05, max_thresh=0.1):
             save_model(model, save_path)
             print(f"> Curriculum advanced. New buffer size: {curriculum_advance_value}")
             wandb.log({
