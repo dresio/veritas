@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Union
 from tqdm import tqdm
 from scipy.spatial import KDTree
+import json
 
 @dataclass
 class IKWorkspace:
@@ -13,6 +14,36 @@ class IKWorkspace:
     cylinder_radius: float = 0.1
     cylinder_height: float = 1.0
     cylinder_center: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.5]))
+    has_cylinder: bool = False
+    
+    def to_dict(self):
+        return {
+            "sphere_radius": self.sphere_radius,
+            "sphere_center": self.sphere_center.tolist(),
+            "cylinder_radius": self.cylinder_radius,
+            "cylinder_height": self.cylinder_height,
+            "cylinder_center": self.cylinder_center.tolist(),
+            "has_cylinder": self.has_cylinder
+        }
+    
+    def save_to_file(self, filename="ik_workspace.json"):
+        with open(filename, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        print(f"IKWorkspace saved to {filename}")
+        
+    @classmethod
+    def load_from_file(cls, filename="ik_workspace.json"):
+        with open(filename, "r") as f:
+            data = json.load(f)
+
+        return cls(
+            sphere_radius=data["sphere_radius"],
+            sphere_center=np.array(data["sphere_center"]),
+            cylinder_radius=data.get("cylinder_radius", 0.1),
+            cylinder_height=data.get("cylinder_height", 1.0),
+            cylinder_center=np.array(data.get("cylinder_center", [0.0, 0.0, 0.5])),
+            has_cylinder=data.get("has_cylinder", False)
+        )
     
 def sample_point(workspace: IKWorkspace):
     """
