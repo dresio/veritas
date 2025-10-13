@@ -12,29 +12,6 @@ import pickle
 import math
 import time
 from typing import Tuple
-
-
-def calculate_base_std(ee_error, max_error = 1.0, min_error = 0.01)->float:
-    
-    max_std = 0.5
-    min_std = 0.01
-    
-    if ee_error is None:
-        return max_std
-    
-    ee_error = ee_error.mean().item()
-    if(ee_error >= max_error):
-        return max_std
-    if(ee_error <= min_error):
-        return min_std
-    
-    # Normalize error to [0, 1] range
-    t = (ee_error - min_error) / (max_error - min_error)
-    t = max(0.0, min(1.0, t))  # clamp to [0, 1]
-
-    # Interpolate between min and max std
-    return min_std + t * (max_std - min_std)
-    
     
 @torch.no_grad()
 def compute_geometric_jacobian(robot, dofs_idx_local, end_effector_link, envs_idx):
@@ -192,27 +169,17 @@ def load_buffer(path="checkpoints/buffer.pkl"):
         return buffer
     return []
 
-def compute_reward_threshold(buffer_size=1, max_buffer_size=1000, base_thresh=0.1, max_thresh=1.0):
-    """ Algorithm to compute a dynamic reward threshold based on buffer size.
-    Uses logarithmic scaling to prevent reward threshold from increasing extremely at the higher values.
-
-    Args:
-        buffer_size (int, optional): _description_. Defaults to 1.
-        max_buffer_size (int, optional): _description_. Defaults to 1000.
-        base_thresh (float, optional): Base reward threshold. Defaults to 0.1.
-        max_thresh (float, optional): Maximum increase in thresh over base value. Defaults to 0.5.
-
-    Returns:
-        float: _description_
-    """
-    return -(base_thresh + ((math.log(buffer_size)/math.log(max_buffer_size))*(max_thresh-base_thresh)))
-
-def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_model_rl.pt", workspace_path="ik_workspace.json"):
+def train_ik_net(max_iterations=5000, save_path="checkpoints/ik_model_rl.pt", workspace_path="ik_workspace.json"):
     wandb.init(project="veritas", config={
         "lr": 1e-3,
-        "initial_buffer_size": 50,
-        "avg_reward_complete": 0.1,
+        "buffer_size": 10000,
         "log_interval": 5,
+        "entropy_weight": 0.1,
+        "joint_weight": 0.1,
+        "action_std": 0.1,
+        "normalize_std": True,
+        "use_angles": True,
+        "task_weight": 1.0,
     })
 
     # Initialize Genesis
@@ -242,7 +209,9 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         ),
     )
 
-    scene.build(n_envs=max_buffer_size, env_spacing=(1.0, 1.0))
+    buffer_size = wandb.config.buffer_size
+
+    scene.build(n_envs=buffer_size, env_spacing=(1.0, 1.0))
 
     joints_name = ("LF_HAA", "LF_HFE", "LF_KFE")
     dofs_idx_local = [robot.get_joint(name).dofs_idx_local[0] for name in joints_name]
@@ -262,7 +231,7 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
         print(f"Failed to load workspace from {workspace_path}, using default. Error: {e}")
     
     # Generate buffer for entire run
-    buffer = generate_buffer(workspace, step_size=1, buffer_size=max_buffer_size, device="cuda")
+    buffer = generate_buffer(workspace, step_size=1, buffer_size=buffer_size, device="cuda")
     save_buffer(buffer)
     
     wandb.log({
@@ -273,64 +242,60 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
     })
 
     step = 0
-    cycle = 0
-    curriculum_advance_value = wandb.config.initial_buffer_size
     
     ee_error = None
     joint_error = None
     
     t0 = time.time()
     
-    while curriculum_advance_value < max_buffer_size:
-        target_pos = buffer[0:curriculum_advance_value]  # [N, 3]
-        qpos_mean = model(target_pos)
-        
-        
-        action_std = calculate_base_std(ee_error)
-        
+    joint_weight = wandb.config.joint_weight
+    entropy_weight = wandb.config.entropy_weight
+    action_std = wandb.config.action_std
+    normalize_std = wandb.config.normalize_std
+    use_angles = wandb.config.use_angles
+    task_weight = wandb.config.task_weight
+    
+    while step < max_iterations:
+        qpos_mean = model(buffer) # [N, 3]
+            
         per_joint_std = compute_per_joint_std(
             qpos_mean, 
             robot=robot, 
             dofs_idx_local=dofs_idx_local,
             end_effector_link=end_effector,
             base_std=action_std,
-            normalize=True,
+            normalize=normalize_std,
         )
         
         joint_std_per_joint = per_joint_std.mean(dim=0).tolist()  # [B]
         distribution = dist_fn(qpos_mean, per_joint_std)
         action = distribution.sample()
-        rewards, ee_error, joint_error = get_reward_batch(action, target_pos, robot, end_effector, dofs_idx_local, use_angles=True, joint_weight=0.3)
+        rewards, ee_error, joint_error = get_reward_batch(action, buffer, robot, end_effector, dofs_idx_local, use_angles=use_angles, task_weight=task_weight, joint_weight=joint_weight)
         avg_reward = rewards.mean().item()
         
         log_probs = distribution.log_prob(action).sum(dim=1)  # [B]
         
+        entropy = distribution.entropy().sum(dim=1).mean()
+        
         norm_rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-        loss = -(log_probs * norm_rewards).mean()
+        loss = -(log_probs * norm_rewards).mean() - (entropy_weight * entropy)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         
         step += 1
-        # last_reward = avg_reward
         
         if step % wandb.config.log_interval == 0:
             wandb.log({
                 "train/step": step,
                 "train/loss": loss.item(),
+                "train/entropy": entropy.item(),
                 "train/avg_reward": avg_reward,
                 "train/reward_std": rewards.std().item(),
                 "train/reward_min": rewards.min().item(),
                 "train/reward_max": rewards.max().item(),
                 "train/log_prob_mean": log_probs.mean().item(),
-                "train/buffer_size": curriculum_advance_value,
-                "train/reward_threshold": compute_reward_threshold(
-                    curriculum_advance_value, 
-                    max_buffer_size=max_buffer_size, 
-                    base_thresh=0.05, 
-                    max_thresh=0.1
-                ),
                 "train/step_time_sec": (time.time() - t0) / wandb.config.log_interval,
                 "train/ee_error_mean": ee_error.mean().item(),
                 "train/joint_error_mean": joint_error.mean().item(),
@@ -339,25 +304,8 @@ def train_ik_net_curriculum(max_buffer_size=1000, save_path="checkpoints/ik_mode
                 "train/action_std_joint_2": joint_std_per_joint[2],
             })
             t0 = time.time()
-            
-        if step % 100 == 0:
-            wandb.log({
-                "hist/target_positions": wandb.Histogram(target_pos.detach().cpu().numpy()),
-                "hist/predicted_qpos": wandb.Histogram(qpos_mean.detach().cpu().numpy()),
-            })
 
-        print(f"[Step {step:04d}] Buffer: {curriculum_advance_value} | Reward: {avg_reward:.4f}")  
-        
-        
-        if avg_reward > compute_reward_threshold(curriculum_advance_value, max_buffer_size=max_buffer_size, base_thresh=0.05, max_thresh=0.1):
-            save_model(model, save_path)
-            print(f"> Curriculum advanced. New buffer size: {curriculum_advance_value}")
-            wandb.log({
-                "curriculum/advanced_step": step,
-                "curriculum/new_buffer_size": curriculum_advance_value,
-                "curriculum/avg_reward": avg_reward,
-            })
-            curriculum_advance_value = curriculum_advance_value + 1
+        print(f"[Step {step:04d}] Reward: {avg_reward:.4f}")  
             
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
@@ -371,4 +319,4 @@ def save_model(model, path):
     print(f"Model saved to: {path}")
 
 if __name__ == "__main__":
-    train_ik_net_curriculum(max_buffer_size=10000, save_path="checkpoints/ik_model.pt")
+    train_ik_net(save_path="checkpoints/ik_model.pt")
