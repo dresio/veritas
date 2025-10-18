@@ -67,6 +67,19 @@ This appoach is very similar to v2, but with a more gradual approach to the curr
 
 ![Cycle Vs Steps Plot](docs/cycle_vs_steps.png)
 
-### Notes for next iteration
 
-Currently investigating the usage of Jacobians to assist with sensitivity analysis to optimize exploration of the solution space. Hessians may also be useful however more computationally expensive.
+### Training Attempt 4
+
+I spent more time optimizing this development cycle, and found a few bugs in the core loop that was causing errors and instability. Once removing all of that, I focused on cleaning up the training loop, removing curriculum learning, and variable hyperparameter optimization based on the training accuracy to help get a more stable training process. This led to a much repeatable training process that could reach lower mean error values then seen in the other iterations in only a fraction of the steps. Once this was done, I focused on hyperparameter optimization using WandB sweeps to find the best parameters for training and will start doing that for all future training attempts. This will allow for a more systematic approach to compare training methods and not rely on arbitrary hyperparameter selection. The results of the hyperparameter sweep are below, showing a clear optimal set of parameters, mostly based on reducing both the learning rate and cation standard deviation to around 0.02. Sweep is shown below:
+
+![Hyperparameter Sweep](docs/hyperparameter_sweep.png)  
+
+It should be noted that I made the move over to a lower dimensional robot arm for this training, closer to what I would be expecting for a legged robot. It limits it to 3 DOF, which may be where some of the increased accuracy and faster convergence during training is coming from. The results of the best model from the sweep are below:
+
+| Steps     | Total Buffer Size | Mean Error (m) | Standard Deviation (m) |
+| --------- | ----------------- | -------------- | ---------------------- |
+| 5,000     | 1,000             | 0.0153         | 0.0073                 |
+
+As seen here, this is a large leap in accuracy compared to previous attempts with over a 30x reduction in mean error and just over a 27x reduction in the standard devaition of that error. There is still work to be done here for improving accuracy before this can be used in a live system, looking over the onion plot (2D representation of the 3D workspace) there are still some holes in the training where the model is not converging well. It isn't for the lack of sampling at those points, the optimizer is just choosing to not converge there. Future work will be focused on lowering the overall error more, removing the non-converged holes, and aimed at approaching the accuracy of the default IK solver. It should be noted the IK solver for the 3DOF is significanly faster at only 3.34ms when run on the gpu, but even still the neural network is achieving 0.22ms, a 15x speed up. The onion plot is shown below:
+
+![Onion Plot](docs/onion_plot_training_attempt_4.png)

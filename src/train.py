@@ -171,12 +171,12 @@ def load_buffer(path="checkpoints/buffer.pkl"):
 
 def train_ik_net(max_iterations=5000, save_path="checkpoints/ik_model_rl.pt", workspace_path="ik_workspace.json"):
     wandb.init(project="veritas", config={
-        "lr": 1e-3,
-        "buffer_size": 10000,
+        "lr": 0.02,
+        "buffer_size": 1000,
         "log_interval": 5,
         "entropy_weight": 0.1,
-        "joint_weight": 0.1,
-        "action_std": 0.1,
+        "joint_weight": 0.2,
+        "action_std": 0.02,
         "normalize_std": True,
         "use_angles": True,
         "task_weight": 1.0,

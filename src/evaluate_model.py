@@ -11,8 +11,6 @@ from tqdm import tqdm
 
 def get_end_effector_error(qpos, robot, end_effector, target_pos, dofs_idx_local=None):
     
-    print("Shape of qpos:", np.array(qpos).shape)
-    print("DOF indices:", dofs_idx_local)
     robot.set_dofs_position(qpos, dofs_idx_local=dofs_idx_local, zero_velocity=True)
     
     
