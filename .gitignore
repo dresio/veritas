@@ -3,3 +3,4 @@ wandb
 src/__pycache__/
 checkpoints/
 output_plots/
+ik_workspace.json

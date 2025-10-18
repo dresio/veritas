@@ -5,6 +5,7 @@ import os
 import math
 import pickle
 from scipy.interpolate import griddata
+from utils import IKWorkspace
 
 from ik_model import IKNet
 import genesis as gs
@@ -35,7 +36,7 @@ def sample_sphere(radius: float, center: np.array, num_points: int):
 
     return np.array(points)
 
-def get_positional_error(model, target_pos, robot, end_effector):
+def get_positional_error(model, target_pos, robot, end_effector, dofs_idx_local):
     """Gets positional error from models prediction
 
     Args:
@@ -49,7 +50,7 @@ def get_positional_error(model, target_pos, robot, end_effector):
     """
     target_tensor = torch.tensor(target_pos, dtype=torch.float32)
     pred_qpos = model(target_tensor)
-    robot.set_qpos(pred_qpos.detach().cpu().numpy())
+    robot.set_dofs_position(pred_qpos.detach().cpu().numpy(), dofs_idx_local=dofs_idx_local, zero_velocity=True)
     robot.scene.step()
     ee_pos = robot.get_link(end_effector.name).get_pos()
     error = np.linalg.norm(np.array(target_pos) - ee_pos.cpu().numpy())
@@ -66,7 +67,6 @@ def plot_hemisphere_2d(points, errors, buffer_points, save_path, title):
         title (_type_): title of the plot
     """
     errors = np.array(errors)
-    norm_errors = (errors - errors.min()) / (np.ptp(errors) + 1e-8)
 
     # Project 3D to 2D (top-down)
     xy = points[:, [0, 1]]  # Only X and Y
@@ -79,7 +79,7 @@ def plot_hemisphere_2d(points, errors, buffer_points, save_path, title):
     ]
 
     # Interpolate errors over the grid
-    grid_z = griddata(xy, norm_errors, (grid_x, grid_y), method='linear')
+    grid_z = griddata(xy, errors, (grid_x, grid_y), method='linear')
 
     # Mask values outside circle
     radius = np.max(np.linalg.norm(xy, axis=1))
@@ -95,7 +95,7 @@ def plot_hemisphere_2d(points, errors, buffer_points, save_path, title):
         cmap='coolwarm',
         interpolation='bilinear'
     )
-    plt.colorbar(c, ax=ax, label="Normalized Positional Error")
+    plt.colorbar(c, ax=ax, label="Positional Error")
 
     # Plot buffer points
     if buffer_points is not None and len(buffer_points) > 0:
@@ -122,7 +122,7 @@ def run_onion_shell_analysis_flat(radius, model, robot, end_effector, dofs_idx_l
     lower_pts, lower_errs = [], []
 
     for point in points:
-        error = get_positional_error(model, point, robot, end_effector)
+        error = get_positional_error(model, point, robot, end_effector, dofs_idx_local)
         if point[2] >= center[2]:
             upper_pts.append(point)
             upper_errs.append(error)
@@ -164,22 +164,37 @@ if __name__ == "__main__":
     buffer_path = "checkpoints/buffer.pkl"
     model_path = "checkpoints/ik_model.pt"
     save_dir = "output_plots"
-    center = np.array([0, 0, 0.33])
-    radii = np.linspace(0.1, 0.7, num=7)
+    
+    wokspace_path = "ik_workspace.json"
+    workspace = IKWorkspace.load_from_file(wokspace_path)
+    
+    
+    center = workspace.sphere_center
+    radii = np.linspace(0.1, workspace.sphere_radius, num=5)
     num_points_per_shell = 300
 
     # Init Genesis
     gs.init(backend=gs.gpu, logging_level='warning')
     scene = gs.Scene()
     scene.add_entity(gs.morphs.Plane())
-    panda = scene.add_entity(gs.morphs.URDF(file="urdf/panda_bullet/panda_nohand.urdf", fixed=True))
+    links_to_keep = ["LF_FOOT"]
+    robot = scene.add_entity(
+        gs.morphs.URDF(
+            file="anymal_c/urdf/anymal_c.urdf",
+            fixed=True,
+            collision=False,
+            pos=(0, 0, 1),
+            links_to_keep=links_to_keep,
+        ),
+    )
     scene.build()
-    end_effector = panda.get_link("link7")
-    joints = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
-    dofs_idx_local = [panda.get_joint(name).dofs_idx_local[0] for name in joints]
+    
+    joints_name = ("LF_HAA", "LF_HFE", "LF_KFE")
+    dofs_idx_local = [robot.get_joint(name).dofs_idx_local[0] for name in joints_name]
+    end_effector = robot.get_link("LF_FOOT")
 
     # Load model
-    model = IKNet()
+    model = IKNet(output_dim=len(dofs_idx_local))
     model.load_state_dict(torch.load(model_path))
     model.eval()
 
@@ -200,7 +215,7 @@ if __name__ == "__main__":
         run_onion_shell_analysis_flat(
             radius=radius,
             model=model,
-            robot=panda,
+            robot=robot,
             end_effector=end_effector,
             dofs_idx_local=dofs_idx_local,
             buffer_points=buffer_by_radius[radius],
