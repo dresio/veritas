@@ -17,7 +17,16 @@ Also utilizing WandB for experiment tracking. It does require an account but it 
 3. Install W&B: `pip install wandb`  
    Log into W&B: `wandb login` and follow the prompts to authenticate your account.
 
-## Sampling
+## Veritas Flow
+
+- Load robot model into Genesis using URDF file
+- Define IK workspace for a linkage utilizing the `scene_test.py` file as a reference. This file has the tools to load a simple tkinter UI to help define and save the workspace. This will save off the workspace to `ik_workspace.json`.
+- Generate the sampling points by calling `dataset.py`. This will create a pickle file with the sampled points and corresponding joint angles from the IK solver. This will be saved off as `ik_dataset.pkl`.
+- Call the training script `train.py`. This will load the dataset in and train the IK net model using supervised learning.
+- Once trained, the model will be saved off in the checkpoints folder. There will be both a `ik_model.pt` file that contains the model weights, and a `buffer.pkl`, which contains the sampled points used for training (helpful for understanding if there were gaps in the training data using onion plot).
+- You can run `evaluate_model.py` and/or `onion_plot.py` to evaluate the model and visualize the results.
+
+## Sampling Points
 
 Points for sampling are generated using the `generate_buffer` function in `utils.py`. This samples points within a spherical shell and outside a cylinder, maintaining a range inside of the physical reach of the robot arm. The range sampling is done to ensure the IK solver has an optimal solution for any point so the mean time calculation for the IK solver is not skewed by points that are out of reach where the solver has to iterate util it hits the max iteration limit. This is also done exported as a static list of points in a tensor to ensure high speed with parallelization during training. If you are trying to reuse this sampling method and they are grouped too closely together, simply increase the step size until it is evenly distributed. Here is an example of the points sampled using the onion plot utility in `onion_plot.py`:
 

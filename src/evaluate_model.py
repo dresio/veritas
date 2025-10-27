@@ -25,7 +25,7 @@ def get_end_effector_error(qpos, robot, end_effector, target_pos, dofs_idx_local
     error = np.linalg.norm(ee_pos - target_np)
     return error
 
-def test_model_vs_ik(pre_trained_model_path="checkpoints/ik_model.pt",  trials=1000, workspace_path="ik_workspace.json"):
+def test_model_vs_ik(model_path="checkpoints/ik_model.pt",  trials=1000, workspace_path="ik_workspace.json"):
     # Init Genesis
     gs.init(backend=gs.gpu, logging_level='warning',)
 
@@ -52,7 +52,7 @@ def test_model_vs_ik(pre_trained_model_path="checkpoints/ik_model.pt",  trials=1
 
     # Load model
     pre_trained_model = IKNet(output_dim=len(dofs_idx_local))
-    pre_trained_model.load_state_dict(torch.load(pre_trained_model_path))
+    pre_trained_model.load_state_dict(torch.load(model_path))
     pre_trained_model.eval()
     
     model_errors, model_times = [], []

@@ -4,3 +4,4 @@ src/__pycache__/
 checkpoints/
 output_plots/
 ik_workspace.json
+ik_dataset.pkl

@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.optim import Adam
 from ik_model import IKNet
-from utils import generate_buffer, IKWorkspace
+from utils import IKWorkspace
 import wandb
 import genesis as gs
 import os
@@ -12,6 +12,7 @@ import pickle
 import math
 import time
 from typing import Tuple
+from dataset import load_dataset
     
 @torch.no_grad()
 def compute_geometric_jacobian(robot, dofs_idx_local, end_effector_link, envs_idx):
@@ -172,7 +173,6 @@ def load_buffer(path="checkpoints/buffer.pkl"):
 def train_ik_net(max_iterations=5000, save_path="checkpoints/ik_model_rl.pt", workspace_path="ik_workspace.json"):
     wandb.init(project="veritas", config={
         "lr": 0.02,
-        "buffer_size": 1000,
         "log_interval": 5,
         "entropy_weight": 0.1,
         "joint_weight": 0.2,
@@ -209,9 +209,7 @@ def train_ik_net(max_iterations=5000, save_path="checkpoints/ik_model_rl.pt", wo
         ),
     )
 
-    buffer_size = wandb.config.buffer_size
 
-    scene.build(n_envs=buffer_size, env_spacing=(1.0, 1.0))
 
     joints_name = ("LF_HAA", "LF_HFE", "LF_KFE")
     dofs_idx_local = [robot.get_joint(name).dofs_idx_local[0] for name in joints_name]
@@ -230,16 +228,18 @@ def train_ik_net(max_iterations=5000, save_path="checkpoints/ik_model_rl.pt", wo
     except Exception as e:
         print(f"Failed to load workspace from {workspace_path}, using default. Error: {e}")
     
-    # Generate buffer for entire run
-    buffer = generate_buffer(workspace, step_size=1, buffer_size=buffer_size, device="cuda")
-    save_buffer(buffer)
-    
+    dataset = load_dataset()
+    buffer = torch.as_tensor(dataset["target_pos"], dtype=torch.float32).cuda()
+
     wandb.log({
         "buffer_targets": wandb.Table(
             columns=["x", "y", "z"],
             data=[item.tolist() for item in buffer]
         )
     })
+    save_buffer(buffer)
+    
+    scene.build(n_envs=len(buffer), env_spacing=(1.0, 1.0))
 
     step = 0
     
